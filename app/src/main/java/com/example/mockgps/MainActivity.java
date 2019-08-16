@@ -1,15 +1,15 @@
 package com.example.mockgps;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
-import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 
 import android.database.Cursor;
@@ -26,6 +26,7 @@ import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.provider.Settings;
 import android.support.annotation.RequiresApi;
 import android.support.design.widget.FloatingActionButton;
@@ -130,11 +131,19 @@ public class MainActivity extends AppCompatActivity
     private final int SDK_PERMISSION_REQUEST = 127;
     private String permissionInfo;
 
+    // 摇杆相关
+    private MyRockerView mRockerView;
+    private double mAngle = 0.0;
+    private int mLevel = 0;
+
+    private static final BigDecimal[] originLatLng = {new BigDecimal("25.003027471046636"),
+            new BigDecimal("117.53691476390783")};
     //位置欺骗相关
     //  latLngInfo  经度&纬度
-    public static String latLngInfo = "104.06121778639009&30.544111926165282";
+    public static String latLngInfo = originLatLng[0] + "&" + originLatLng[1];
     private boolean isMockLocOpen = false;
     private MockGpsService mockGpsService;
+    private boolean mBound = false;
     private MockServiceReceiver mockServiceReceiver = null;
     private boolean isServiceRun = false;
     private boolean isMockServStart = false;
@@ -153,7 +162,6 @@ public class MainActivity extends AppCompatActivity
 
     //http
     private RequestQueue mRequestQueue;
-    private boolean isNetworkConnected = true;
 
     // 定位相关
     LocationClient mLocClient = null;
@@ -166,12 +174,13 @@ public class MainActivity extends AppCompatActivity
     private double mCurrentLat = 0.0;
     private double mCurrentLon = 0.0;
     private float mCurrentAccracy;
-    private String mCurrentCity = "成都市";
+    private String mCurrentCity = "漳州市";
     private String mCurrentAddr;
     /**
      * 当前地点击点
      */
-    public static LatLng currentPt = new LatLng(30.547743718042415, 104.07018449827267);
+    public static LatLng currentPt = new LatLng(Double.valueOf(originLatLng[0].toString()),
+            Double.valueOf(originLatLng[1].toString()));
     public static BitmapDescriptor bdA = BitmapDescriptorFactory
             .fromResource(R.drawable.icon_gcoding);
 
@@ -242,7 +251,11 @@ public class MainActivity extends AppCompatActivity
         }
 
         //set fab listener
-        setFabListener();
+        // setFabListener();
+        fab = findViewById(R.id.fab);
+        fabStop = findViewById(R.id.fabStop);
+        fab.hide();
+        fabStop.hide();
 
         DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
         ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
@@ -280,7 +293,6 @@ public class MainActivity extends AppCompatActivity
         //网络是否可用
         if (!isNetworkAvailable()) {
             DisplayToast("网络连接不可用,请检查网络连接设置");
-            isNetworkConnected = false;
         }
 
         //gps是否开启
@@ -322,6 +334,7 @@ public class MainActivity extends AppCompatActivity
         if (!isMockLocOpen) {
             setDialog();
         }
+
         //悬浮窗权限判断
         if (Build.VERSION.SDK_INT >= 23) {
             if (!Settings.canDrawOverlays(getApplicationContext())) {
@@ -363,6 +376,25 @@ public class MainActivity extends AppCompatActivity
                 log.debug("GPS: gps opened");
                 //如果GPS定位开启，打开定位图层
                 openLocateLayer();
+            }
+        }).start();
+
+        // 一个子线程，动态响应摇杆位置
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Log.d("Rocker thread", "进程开始");
+                    log.debug("Rocker thread: 进程开始");
+                    while (true) {
+                        if (mLevel > 0) {
+                            changePosition();
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.d("Rocker thread", "进程中断");
+                    log.debug("Rocker thread: 进程中断");
+                }
             }
         }).start();
 
@@ -543,8 +575,8 @@ public class MainActivity extends AppCompatActivity
     private void randomFix() {
         double ra1 = Math.random() * 2.0 - 1.0;
         double ra2 = Math.random() * 2.0 - 1.0;
-        double randLng = 104.07018449827267 + ra1 / 2000.0;
-        double randLat = 30.547743718042415 + ra2 / 2000.0;
+        double randLng = Double.valueOf(originLatLng[1].toString()) + ra1 / 2000.0;
+        double randLat = Double.valueOf(originLatLng[0].toString()) + ra2 / 2000.0;
         currentPt = new LatLng(randLat, randLng);
         transformCoordinate(Double.toString(randLng), Double.toString(randLat));
     }
@@ -1161,7 +1193,7 @@ public class MainActivity extends AppCompatActivity
 
     //模拟位置权限是否开启
     public boolean isAllowMockLocation() {
-        boolean canMockPosition = false;
+        boolean canMockPosition;
         if (Build.VERSION.SDK_INT <= 22) {//6.0以下
             canMockPosition = Settings.Secure.getInt(this.getContentResolver(), Settings.Secure.ALLOW_MOCK_LOCATION, 0) != 0;
         } else {
@@ -1379,6 +1411,13 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        
+        bindRocker();
+    }
+
+    @Override
     protected void onStop() {
         Log.d("PROGRESS", "onStop");
         log.debug("PROGRESS: onStop");
@@ -1389,6 +1428,12 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     protected void onDestroy() {
+
+        if (mBound) {
+            unbindService(rockerConnection);
+            mBound = false;
+        }
+
         Log.d("PROGRESS", "onDestroy");
         // 退出时销毁定位
         mLocClient.stop();
@@ -1700,125 +1745,125 @@ public class MainActivity extends AppCompatActivity
 
     //坐标转换
     private void transformCoordinate(final String longitude, final String latitude) {
+        //离线转换坐标系
+        double latLng[]= Utils.bd2wgs(Double.valueOf(longitude),Double.valueOf(latitude));
+        latLngInfo=latLng[0] + "&" + latLng[1];
+
         //参数坐标系：bd09
 //        boolean isInCHN=false;
-        final double error = 0.00000001;
-//        final String mcode = "9D:8B:73:A5:DF:2A:36:3F:84:2D:38:55:BD:0A:57:C5:8F:50:44:69;com.example.mockgps";
-        final String mcode = getResources().getString(R.string.safecode);
-        final String ak = "iDVeohokAwgulI0Yga4voEoqDaGqxL7y";
-        //判断bd09坐标是否在国内
-        String mapApiUrl = "https://api.map.baidu.com/geoconv/v1/?coords=" + longitude + "," + latitude +
-                "&from=5&to=3&ak=" + ak + "&mcode=" + mcode;
-        Log.d("HTTP", mapApiUrl);
-        log.debug("HTTP: " + mapApiUrl);
-        //bd09坐标转gcj02
-        StringRequest stringRequest = new StringRequest(mapApiUrl,
-                new Response.Listener<String>() {
-                    @Override
-                    public void onResponse(String response) {
-                        try {
-                            JSONObject getRetJson = new JSONObject(response);
-                            //如果api接口转换成功
-                            if (Integer.valueOf(getRetJson.getString("status")) == 0) {
-                                Log.d("HTTP", "call api[bd09_to_gcj02] success");
-                                log.debug("HTTP: call api[bd09_to_gcj02] success");
-                                JSONArray coordinateArr = getRetJson.getJSONArray("result");
-                                JSONObject coordinate = coordinateArr.getJSONObject(0);
-                                String gcj02Longitude = coordinate.getString("x");
-                                String gcj02Latitude = coordinate.getString("y");
-
-                                Log.d("DEBUG", "bd09Longitude is " + longitude);
-                                Log.d("DEBUG", "bd09Latitude is " + latitude);
-
-                                Log.d("DEBUG", "gcj02Longitude is " + gcj02Longitude);
-                                Log.d("DEBUG", "gcj02Latitude is " + gcj02Latitude);
-
-                                log.debug("bd09Longitude is " + longitude + ", " + "bd09Latitude is " + latitude);
-                                log.debug("gcj02Longitude is " + gcj02Longitude + ", " + "gcj02Latitude is " + gcj02Latitude);
-
-                                BigDecimal bigDecimalGcj02Longitude = new BigDecimal(Double.valueOf(gcj02Longitude));
-                                BigDecimal bigDecimalGcj02Latitude = new BigDecimal(Double.valueOf(gcj02Latitude));
-
-                                BigDecimal bigDecimalBd09Longitude = new BigDecimal(Double.valueOf(longitude));
-                                BigDecimal bigDecimalBd09Latitude = new BigDecimal(Double.valueOf(latitude));
-
-                                double gcj02LongitudeDouble = bigDecimalGcj02Longitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
-                                double gcj02LatitudeDouble = bigDecimalGcj02Latitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
-                                double bd09LongitudeDouble = bigDecimalBd09Longitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
-                                double bd09LatitudeDouble = bigDecimalBd09Latitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
-
-
-                                Log.d("DEBUG", "gcj02LongitudeDouble is " + gcj02LongitudeDouble);
-                                Log.d("DEBUG", "gcj02LatitudeDouble is " + gcj02LatitudeDouble);
-                                Log.d("DEBUG", "bd09LongitudeDouble is " + bd09LongitudeDouble);
-                                Log.d("DEBUG", "bd09LatitudeDouble is " + bd09LatitudeDouble);
-
-                                log.debug("gcj02LongitudeDouble is " + gcj02LongitudeDouble + ", " + "gcj02LatitudeDouble is " + gcj02LatitudeDouble);
-                                log.debug("bd09LongitudeDouble is " + bd09LongitudeDouble + ", " + "bd09LatitudeDouble is " + bd09LatitudeDouble);
-
-
-                                //如果bd09转gcj02 结果误差很小  认为该坐标在国外
-                                if ((Math.abs(gcj02LongitudeDouble - bd09LongitudeDouble)) <= error && (Math.abs(gcj02LatitudeDouble - bd09LatitudeDouble)) <= error) {
-                                    //不进行坐标转换
-                                    latLngInfo = longitude + "&" + latitude;
-                                    Log.d("DEBUG", "OUT OF CHN, NO NEED TO TRANSFORM COORDINATE");
-                                    log.debug("OUT OF CHN, NO NEED TO TRANSFORM COORDINATE");
-//                                    DisplayToast("OUT OF CHN, NO NEED TO TRANSFORM COORDINATE");
-                                } else {
-                                    //离线转换坐标系
-//                                    double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
-                                    double latLng[] = Utils.gcj02towgs84(Double.valueOf(gcj02Longitude), Double.valueOf(gcj02Latitude));
-                                    latLngInfo = latLng[0] + "&" + latLng[1];
-                                    Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
-                                    log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
-//                                    DisplayToast("IN CHN, NEED TO TRANSFORM COORDINATE");
-                                }
-                            }
-                            //api接口转换失败 认为在国内
-                            else {
-                                //离线转换坐标系
-                                double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
-                                latLngInfo = latLng[0] + "&" + latLng[1];
-                                Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
-                                log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
-//                                DisplayToast("BD Map Api Return not Zero, ASSUME IN CHN, NEED TO TRANSFORM COORDINATE");
-                            }
-
-                        } catch (JSONException e) {
-                            Log.e("JSON", "resolve json error");
-                            log.error("JSON: resolve json error");
-                            e.printStackTrace();
-                            //离线转换坐标系
-                            double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
-                            latLngInfo = latLng[0] + "&" + latLng[1];
-                            Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
-                            log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
-//                            DisplayToast("Resolve JSON Error, ASSUME IN CHN, NEED TO TRANSFORM COORDINATE");
-                        }
-                    }
-                }, new Response.ErrorListener() {
-
-            @Override
-            public void onErrorResponse(VolleyError error) {
-                //http 请求失败
-                Log.e("HTTP", "HTTP GET FAILED");
-                log.error("HTTP: HTTP GET FAILED");
-                //离线转换坐标系
-                double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
-                latLngInfo = latLng[0] + "&" + latLng[1];
-                Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
-                log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
-//                DisplayToast("HTTP Get Failed, ASSUME IN CHN, NEED TO TRANSFORM COORDINATE");
-            }
-        });
-        // 给请求设置tag
-        stringRequest.setTag("MapAPI");
-        // 添加tag到请求队列
-        mRequestQueue.add(stringRequest);
-        //离线转换坐标系
-//        double latLng[]= Utils.bd2wgs(Double.valueOf(longitude),Double.valueOf(latitude));
-//        latLngInfo=longitude+"&"+latitude;
-//        latLngInfo=latLng[0]+"&"+latLng[1];
+//        final double error = 0.00000001;
+////        final String mcode = "9D:8B:73:A5:DF:2A:36:3F:84:2D:38:55:BD:0A:57:C5:8F:50:44:69;com.example.mockgps";
+//        final String mcode = getResources().getString(R.string.safecode);
+//        final String ak = "iDVeohokAwgulI0Yga4voEoqDaGqxL7y";
+//        //判断bd09坐标是否在国内
+//        String mapApiUrl = "https://api.map.baidu.com/geoconv/v1/?coords=" + longitude + "," + latitude +
+//                "&from=5&to=3&ak=" + ak + "&mcode=" + mcode;
+//        Log.d("HTTP", mapApiUrl);
+//        log.debug("HTTP: " + mapApiUrl);
+//        //bd09坐标转gcj02
+//        StringRequest stringRequest = new StringRequest(mapApiUrl,
+//                new Response.Listener<String>() {
+//                    @Override
+//                    public void onResponse(String response) {
+//                        try {
+//                            JSONObject getRetJson = new JSONObject(response);
+//                            //如果api接口转换成功
+//                            if (Integer.valueOf(getRetJson.getString("status")) == 0) {
+//                                Log.d("HTTP", "call api[bd09_to_gcj02] success");
+//                                log.debug("HTTP: call api[bd09_to_gcj02] success");
+//                                JSONArray coordinateArr = getRetJson.getJSONArray("result");
+//                                JSONObject coordinate = coordinateArr.getJSONObject(0);
+//                                String gcj02Longitude = coordinate.getString("x");
+//                                String gcj02Latitude = coordinate.getString("y");
+//
+//                                Log.d("DEBUG", "bd09Longitude is " + longitude);
+//                                Log.d("DEBUG", "bd09Latitude is " + latitude);
+//
+//                                Log.d("DEBUG", "gcj02Longitude is " + gcj02Longitude);
+//                                Log.d("DEBUG", "gcj02Latitude is " + gcj02Latitude);
+//
+//                                log.debug("bd09Longitude is " + longitude + ", " + "bd09Latitude is " + latitude);
+//                                log.debug("gcj02Longitude is " + gcj02Longitude + ", " + "gcj02Latitude is " + gcj02Latitude);
+//
+//                                BigDecimal bigDecimalGcj02Longitude = new BigDecimal(Double.valueOf(gcj02Longitude));
+//                                BigDecimal bigDecimalGcj02Latitude = new BigDecimal(Double.valueOf(gcj02Latitude));
+//
+//                                BigDecimal bigDecimalBd09Longitude = new BigDecimal(Double.valueOf(longitude));
+//                                BigDecimal bigDecimalBd09Latitude = new BigDecimal(Double.valueOf(latitude));
+//
+//                                double gcj02LongitudeDouble = bigDecimalGcj02Longitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
+//                                double gcj02LatitudeDouble = bigDecimalGcj02Latitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
+//                                double bd09LongitudeDouble = bigDecimalBd09Longitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
+//                                double bd09LatitudeDouble = bigDecimalBd09Latitude.setScale(9, BigDecimal.ROUND_HALF_UP).doubleValue();
+//
+//
+//                                Log.d("DEBUG", "gcj02LongitudeDouble is " + gcj02LongitudeDouble);
+//                                Log.d("DEBUG", "gcj02LatitudeDouble is " + gcj02LatitudeDouble);
+//                                Log.d("DEBUG", "bd09LongitudeDouble is " + bd09LongitudeDouble);
+//                                Log.d("DEBUG", "bd09LatitudeDouble is " + bd09LatitudeDouble);
+//
+//                                log.debug("gcj02LongitudeDouble is " + gcj02LongitudeDouble + ", " + "gcj02LatitudeDouble is " + gcj02LatitudeDouble);
+//                                log.debug("bd09LongitudeDouble is " + bd09LongitudeDouble + ", " + "bd09LatitudeDouble is " + bd09LatitudeDouble);
+//
+//
+//                                //如果bd09转gcj02 结果误差很小  认为该坐标在国外
+//                                if ((Math.abs(gcj02LongitudeDouble - bd09LongitudeDouble)) <= error && (Math.abs(gcj02LatitudeDouble - bd09LatitudeDouble)) <= error) {
+//                                    //不进行坐标转换
+//                                    latLngInfo = longitude + "&" + latitude;
+//                                    Log.d("DEBUG", "OUT OF CHN, NO NEED TO TRANSFORM COORDINATE");
+//                                    log.debug("OUT OF CHN, NO NEED TO TRANSFORM COORDINATE");
+////                                    DisplayToast("OUT OF CHN, NO NEED TO TRANSFORM COORDINATE");
+//                                } else {
+//                                    //离线转换坐标系
+////                                    double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
+//                                    double latLng[] = Utils.gcj02towgs84(Double.valueOf(gcj02Longitude), Double.valueOf(gcj02Latitude));
+//                                    latLngInfo = latLng[0] + "&" + latLng[1];
+//                                    Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
+//                                    log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
+////                                    DisplayToast("IN CHN, NEED TO TRANSFORM COORDINATE");
+//                                }
+//                            }
+//                            //api接口转换失败 认为在国内
+//                            else {
+//                                //离线转换坐标系
+//                                double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
+//                                latLngInfo = latLng[0] + "&" + latLng[1];
+//                                Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
+//                                log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
+////                                DisplayToast("BD Map Api Return not Zero, ASSUME IN CHN, NEED TO TRANSFORM COORDINATE");
+//                            }
+//
+//                        } catch (JSONException e) {
+//                            Log.e("JSON", "resolve json error");
+//                            log.error("JSON: resolve json error");
+//                            e.printStackTrace();
+//                            //离线转换坐标系
+//                            double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
+//                            latLngInfo = latLng[0] + "&" + latLng[1];
+//                            Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
+//                            log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
+////                            DisplayToast("Resolve JSON Error, ASSUME IN CHN, NEED TO TRANSFORM COORDINATE");
+//                        }
+//                    }
+//                }, new Response.ErrorListener() {
+//
+//            @Override
+//            public void onErrorResponse(VolleyError error) {
+//                //http 请求失败
+//                Log.e("HTTP", "HTTP GET FAILED");
+//                log.error("HTTP: HTTP GET FAILED");
+//                //离线转换坐标系
+//                double latLng[] = Utils.bd2wgs(Double.valueOf(longitude), Double.valueOf(latitude));
+//                latLngInfo = latLng[0] + "&" + latLng[1];
+//                Log.d("DEBUG", "IN CHN, NEED TO TRANSFORM COORDINATE");
+//                log.debug("IN CHN, NEED TO TRANSFORM COORDINATE");
+////                DisplayToast("HTTP Get Failed, ASSUME IN CHN, NEED TO TRANSFORM COORDINATE");
+//            }
+//        });
+//        // 给请求设置tag
+//        stringRequest.setTag("MapAPI");
+//        // 添加tag到请求队列
+//        mRequestQueue.add(stringRequest);
     }
 
     //根据经纬度更新位置信息 并插表
@@ -2010,4 +2055,76 @@ public class MainActivity extends AppCompatActivity
         }
     }
 
+    private ServiceConnection rockerConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
+            Log.d("BINDER", "绑定成功");
+            log.debug("BINDER: 绑定成功");
+            MockGpsService.LocalBinder binder = (MockGpsService.LocalBinder)iBinder;
+            mockGpsService = binder.getService();
+            mBound = true;
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName componentName) {
+            Log.e("BINDER", "绑定失败");
+            log.error("BINDER: 绑定失败");
+            mBound = false;
+        }
+    };
+
+    private void bindRocker() {
+        mRockerView = findViewById(R.id.rocker_View);
+
+        // 设置摇杆响应函数
+        mRockerView.setOnAngleChangeListener(new MyRockerView.OnAngleChangeListener() {
+            @Override
+            public void onStart() {
+
+            }
+
+            @Override
+            public void angle(double angle) {
+                mAngle = angle;
+//                changePosition();
+            }
+
+            @Override
+            public void onFinish() {
+
+            }
+        });
+
+        mRockerView.setOnDistanceLevelListener(new MyRockerView.OnDistanceLevelListener() {
+            @Override
+            public void onDistanceLevel(int level) {
+                mLevel = level;
+//                changePosition();
+            }
+
+        });
+
+        Intent intent = new Intent(MainActivity.this, MockGpsService.class);
+        bindService(intent, rockerConnection, Context.BIND_AUTO_CREATE);
+    }
+
+    private void changePosition() {
+        Log.d("Distance Level", ": " + mLevel);
+        log.debug("Distance Level: " + mLevel);
+        Log.d("Angle", ": " + mAngle);
+        log.debug("Angle: " + mAngle);
+        if (mLevel != 0) {
+            // 修改经纬度坐标
+            currentPt = new LatLng(currentPt.latitude - 1e-7 * Math.sin(mAngle * Math.PI / 180.0),
+                    currentPt.longitude + 1e-7 * Math.cos(mAngle * Math.PI / 180.0));
+            MapStatusUpdate mapstatusupdate = MapStatusUpdateFactory.newLatLng(currentPt);
+            //对地图的中心点进行更新
+            mBaiduMap.setMapStatus(mapstatusupdate);
+            updateMapState();
+            transformCoordinate(Double.toString(currentPt.longitude), Double.toString(currentPt.latitude));
+
+            // 修改服务中的经纬度坐标
+            mockGpsService.setLatLngInfo(latLngInfo);
+        }
+    }
 }

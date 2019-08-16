@@ -37,7 +37,6 @@ import java.util.UUID;
 
 public class MockGpsService extends Service {
 
-
     private String TAG = "MockGpsService";
 
     private LocationManager locationManager;
@@ -47,7 +46,7 @@ public class MockGpsService extends Service {
     private boolean isStop = true;
 
     //经纬度字符串
-    private String latLngInfo = "104.06121778639009&30.544111926165282";
+    private String latLngInfo = "25.0031&117.5337";
 
     //悬浮窗
     private FloatWindow floatWindow;
@@ -60,10 +59,38 @@ public class MockGpsService extends Service {
     //log debug
     private static Logger log = Logger.getLogger(MockGpsService.class);
 
+    private final IBinder mBinder = new LocalBinder();
+
+    /**
+     * 用于客户端绑定的类。由于该服务将持续运行，因此避免了IPC的使用
+     */
+    public class LocalBinder extends Binder {
+        public MockGpsService getService() {
+            // 返回服务实例，供客户端访问服务的方法和变量
+            return MockGpsService.this;
+        }
+    }
+
+
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
-        return null;
+        //这里开启悬浮窗
+        if (!isFloatWindowStart) {
+            floatWindow = new FloatWindow(this);
+            floatWindow.showFloatWindow();
+            isFloatWindowStart = true;
+        }
+        // 开始循环
+        isStop = false;
+
+        return mBinder;
+    }
+
+    public void setLatLngInfo(String latLngInfo) {
+        Log.d("LATLON: ", latLngInfo);
+        log.debug("LATLON: " + latLngInfo);
+        this.latLngInfo = latLngInfo;
     }
 
     @SuppressLint("WrongConstant")
@@ -88,7 +115,7 @@ public class MockGpsService extends Service {
         setGPSTestProvider();
 
         //thread
-        handlerThread = new HandlerThread(getUUID(), -2);
+        handlerThread = new HandlerThread(getUUID(), -3);
         handlerThread.start();
 
         handler = new Handler(handlerThread.getLooper()) {
@@ -165,20 +192,19 @@ public class MockGpsService extends Service {
         startForeground(1, notification);
         //
 
-        //get location info from mainActivity
-        latLngInfo = intent.getStringExtra("key");
-        Log.d(TAG, "DataFromMain is " + latLngInfo);
-        log.debug(TAG + ": DataFromMain is " + latLngInfo);
-        //start to refresh location
-        isStop = false;
-
-        //这里开启悬浮窗
-        if (!isFloatWindowStart) {
-            floatWindow = new FloatWindow(this);
-            floatWindow.showFloatWindow();
-            isFloatWindowStart = true;
-        }
-
+//        //get location info from mainActivity
+//        latLngInfo = intent.getStringExtra("key");
+//        Log.d(TAG, "DataFromMain is " + latLngInfo);
+//        log.debug(TAG + ": DataFromMain is " + latLngInfo);
+//        //start to refresh location
+//        isStop = false;
+//
+//        //这里开启悬浮窗
+//        if (!isFloatWindowStart) {
+//            floatWindow = new FloatWindow(this);
+//            floatWindow.showFloatWindow();
+//            isFloatWindowStart = true;
+//        }
 
 //        return START_STICKY;
         return super.onStartCommand(intent, flags, startId);
@@ -206,6 +232,9 @@ public class MockGpsService extends Service {
 
         //rmGPSProvider();
         stopForeground(true);
+
+        // 恢复定位提供方
+        resetProvider();
 
         //broadcast to MainActivity
         Intent intent = new Intent();
@@ -409,6 +438,65 @@ public class MockGpsService extends Service {
         //新
         locationManager.setTestProviderStatus(LocationManager.GPS_PROVIDER, LocationProvider.AVAILABLE, null,
                 System.currentTimeMillis());
+    }
+
+    // 恢复默认定位提供方
+    public void resetProvider() {
+        // GPS Provider
+        try {
+            locationManager.addTestProvider(LocationManager.GPS_PROVIDER,
+                    true,
+                    true,
+                    true,
+                    false,
+                    true,
+                    true,
+                    true, 0, 5);
+            Log.d(TAG, "resetProvider[GPS_PROVIDER] success");
+            log.debug(TAG + ": resetProvider[GPS_PROVIDER] success");
+        }catch (Exception e){
+            e.printStackTrace();
+            Log.d(TAG, "resetProvider[GPS_PROVIDER] error");
+            log.debug(TAG + ": resetProvider[GPS_PROVIDER] error");
+        }
+        if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            try {
+                locationManager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true);
+            }catch (Exception e){
+                e.printStackTrace();
+                Log.d(TAG, "resetProviderEnabled[GPS_PROVIDER] error");
+                log.debug(TAG + ": resetProviderEnabled[GPS_PROVIDER] error");
+            }
+        }
+
+        // Network Provider
+        try {
+            locationManager.addTestProvider(LocationManager.NETWORK_PROVIDER,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    1,
+                    Criteria.ACCURACY_FINE);
+            Log.d(TAG, "resetProvider[NETWORK_PROVIDER] success");
+            log.debug(TAG + ": resetProvider[NETWORK_PROVIDER] success");
+        }catch (Exception e){
+            e.printStackTrace();
+            Log.d(TAG, "resetProvider[NETWORK_PROVIDER] error");
+            log.debug(TAG + ": resetProvider[NETWORK_PROVIDER] error");
+        }
+        if (!locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            try {
+                locationManager.setTestProviderEnabled(LocationManager.NETWORK_PROVIDER, true);
+            }catch (Exception e){
+                e.printStackTrace();
+                Log.d(TAG, "resetProviderEnabled[NETWORK_PROVIDER] error");
+                log.debug(TAG + ": resetProviderEnabled[NETWORK_PROVIDER] error");
+            }
+        }
     }
 
 

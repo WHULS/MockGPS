@@ -77,6 +77,8 @@
         <activity android:name="com.example.mockgps.OfflineMapActivity"/>
 
         <receiver android:name="com.example.mockgps.MainActivity$MockServiceReceiver" />
+
+
     </application>
 
 </manifest>
