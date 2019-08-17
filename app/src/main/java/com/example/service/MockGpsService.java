@@ -233,8 +233,6 @@ public class MockGpsService extends Service {
         //rmGPSProvider();
         stopForeground(true);
 
-        // 恢复定位提供方
-        resetProvider();
 
         //broadcast to MainActivity
         Intent intent = new Intent();
@@ -439,66 +437,6 @@ public class MockGpsService extends Service {
         locationManager.setTestProviderStatus(LocationManager.GPS_PROVIDER, LocationProvider.AVAILABLE, null,
                 System.currentTimeMillis());
     }
-
-    // 恢复默认定位提供方
-    public void resetProvider() {
-        // GPS Provider
-        try {
-            locationManager.addTestProvider(LocationManager.GPS_PROVIDER,
-                    true,
-                    true,
-                    true,
-                    false,
-                    true,
-                    true,
-                    true, 0, 5);
-            Log.d(TAG, "resetProvider[GPS_PROVIDER] success");
-            log.debug(TAG + ": resetProvider[GPS_PROVIDER] success");
-        }catch (Exception e){
-            e.printStackTrace();
-            Log.d(TAG, "resetProvider[GPS_PROVIDER] error");
-            log.debug(TAG + ": resetProvider[GPS_PROVIDER] error");
-        }
-        if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            try {
-                locationManager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true);
-            }catch (Exception e){
-                e.printStackTrace();
-                Log.d(TAG, "resetProviderEnabled[GPS_PROVIDER] error");
-                log.debug(TAG + ": resetProviderEnabled[GPS_PROVIDER] error");
-            }
-        }
-
-        // Network Provider
-        try {
-            locationManager.addTestProvider(LocationManager.NETWORK_PROVIDER,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    1,
-                    Criteria.ACCURACY_FINE);
-            Log.d(TAG, "resetProvider[NETWORK_PROVIDER] success");
-            log.debug(TAG + ": resetProvider[NETWORK_PROVIDER] success");
-        }catch (Exception e){
-            e.printStackTrace();
-            Log.d(TAG, "resetProvider[NETWORK_PROVIDER] error");
-            log.debug(TAG + ": resetProvider[NETWORK_PROVIDER] error");
-        }
-        if (!locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-            try {
-                locationManager.setTestProviderEnabled(LocationManager.NETWORK_PROVIDER, true);
-            }catch (Exception e){
-                e.printStackTrace();
-                Log.d(TAG, "resetProviderEnabled[NETWORK_PROVIDER] error");
-                log.debug(TAG + ": resetProviderEnabled[NETWORK_PROVIDER] error");
-            }
-        }
-    }
-
 
     //uuid random
     public static String getUUID() {

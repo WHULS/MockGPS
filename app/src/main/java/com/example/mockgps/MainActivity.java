@@ -19,6 +19,7 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Criteria;
+import android.location.Location;
 import android.location.LocationManager;
 import android.location.LocationProvider;
 import android.net.ConnectivityManager;
@@ -26,7 +27,10 @@ import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Message;
 import android.provider.Settings;
 import android.support.annotation.RequiresApi;
 import android.support.design.widget.FloatingActionButton;
@@ -135,6 +139,13 @@ public class MainActivity extends AppCompatActivity
     private MyRockerView mRockerView;
     private double mAngle = 0.0;
     private int mLevel = 0;
+    private int mSpeed = 1;
+    private HandlerThread rockerHandlerThread;
+    private Handler rockerHandler;
+    private boolean isRockerThreadStop = true;
+    private RadioGroup.OnCheckedChangeListener speedButtonListener; // 速度按钮监听器
+    private RadioGroup speedButtonGroup;
+    private LocationManager locationManager = null;
 
     private static final BigDecimal[] originLatLng = {new BigDecimal("25.003027471046636"),
             new BigDecimal("117.53691476390783")};
@@ -283,7 +294,7 @@ public class MainActivity extends AppCompatActivity
 
 
         //获取权限
-        getPersimmions();
+        getPermissions();
         /////
         mSensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);//获取传感器管理服务
         mCurrentMode = MyLocationConfiguration.LocationMode.NORMAL;
@@ -379,24 +390,32 @@ public class MainActivity extends AppCompatActivity
             }
         }).start();
 
-        // 一个子线程，动态响应摇杆位置
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
+        // 绑定摇杆
+        bindRocker();
+
+        // 动态响应摇杆位置
+        rockerHandlerThread = new HandlerThread("Rocker-Handler", -4);
+        rockerHandlerThread.start();
+        rockerHandler = new Handler(rockerHandlerThread.getLooper()) {
+            public void handleMessage(Message msg) {
                 try {
-                    Log.d("Rocker thread", "进程开始");
-                    log.debug("Rocker thread: 进程开始");
-                    while (true) {
-                        if (mLevel > 0) {
-                            changePosition();
-                        }
+                    Thread.sleep(128);
+                    Log.d("Rocker Thread", "[" + isRockerThreadStop + "]: " + mLevel);
+                    log.debug("Rocker Thread: [" + isRockerThreadStop + "]: " + mLevel);
+                    if (!isRockerThreadStop && mLevel > 0) {
+                        changePosition();
                     }
-                } catch (Exception e) {
-                    Log.d("Rocker thread", "进程中断");
-                    log.debug("Rocker thread: 进程中断");
+                    // 调用自身，完成循环
+                    sendEmptyMessage(0);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    Log.d("Rocker Thread", "handleMessage error");
+                    log.debug("Rocker Thread: handleMessage error");
+                    Thread.currentThread().interrupt();
                 }
             }
-        }).start();
+        };
+        rockerHandler.sendEmptyMessage(0);
 
 //        func();
         //for debug
@@ -583,6 +602,22 @@ public class MainActivity extends AppCompatActivity
 
     //set group button listener
     private void setGroupListener() {
+
+        // 设置速度按钮监听器
+        speedButtonGroup = findViewById(R.id.speedRadioGroup);
+        speedButtonListener = new RadioGroup.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(RadioGroup radioGroup, int i) {
+                if (i == R.id.speedPace)
+                    mSpeed = 1;
+                else if (i == R.id.speedMotor)
+                    mSpeed = 3;
+                else if (i == R.id.speedCar)
+                    mSpeed = 5;
+            }
+        };
+        speedButtonGroup.setOnCheckedChangeListener(speedButtonListener);
+
         grouploc = (RadioGroup) this.findViewById(R.id.RadioGroupLocType);
         radioButtonListener2 = new RadioGroup.OnCheckedChangeListener() {
             @Override
@@ -623,7 +658,7 @@ public class MainActivity extends AppCompatActivity
                 if (checkedId == R.id.normal) {
                     mBaiduMap.setMapType(BaiduMap.MAP_TYPE_NORMAL);
                 }
-                if (checkedId == R.id.statellite) {
+                if (checkedId == R.id.satellite) {
                     mBaiduMap.setMapType(BaiduMap.MAP_TYPE_SATELLITE);
                 }
             }
@@ -1411,13 +1446,6 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    protected void onStart() {
-        super.onStart();
-        
-        bindRocker();
-    }
-
-    @Override
     protected void onStop() {
         Log.d("PROGRESS", "onStop");
         log.debug("PROGRESS: onStop");
@@ -1435,8 +1463,22 @@ public class MainActivity extends AppCompatActivity
         }
 
         Log.d("PROGRESS", "onDestroy");
+
+        // 停止摇杆响应线程
+        isRockerThreadStop = true;
+        rockerHandler.removeMessages(0);
+        rockerHandlerThread.quit();
+
+        // 停止服务并重新定位一次
+        // 目的是为了让GPS快速接受一次信号，恢复GPS Provider
+        Intent mockLocServiceIntent = new Intent(MainActivity.this, MockGpsService.class);
+        stopService(mockLocServiceIntent);
+        mLocClient.stop();
+        mLocClient.start();
+
         // 退出时销毁定位
         mLocClient.stop();
+
         // 关闭定位图层
         mBaiduMap.setMyLocationEnabled(false);
         mMapView.onDestroy();
@@ -1458,7 +1500,7 @@ public class MainActivity extends AppCompatActivity
 
 
     @TargetApi(23)
-    private void getPersimmions() {
+    private void getPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             ArrayList<String> permissions = new ArrayList<String>();
             /***
@@ -2104,8 +2146,12 @@ public class MainActivity extends AppCompatActivity
 
         });
 
+        // 绑定服务
         Intent intent = new Intent(MainActivity.this, MockGpsService.class);
         bindService(intent, rockerConnection, Context.BIND_AUTO_CREATE);
+
+        // 开启线程
+        isRockerThreadStop = false;
     }
 
     private void changePosition() {
@@ -2115,8 +2161,10 @@ public class MainActivity extends AppCompatActivity
         log.debug("Angle: " + mAngle);
         if (mLevel != 0) {
             // 修改经纬度坐标
-            currentPt = new LatLng(currentPt.latitude - 1e-7 * Math.sin(mAngle * Math.PI / 180.0),
-                    currentPt.longitude + 1e-7 * Math.cos(mAngle * Math.PI / 180.0));
+            currentPt = new LatLng(currentPt.latitude - 1e-5 * mSpeed * Math.sin(mAngle * Math.PI / 180.0),
+                    currentPt.longitude + 1e-5 * mSpeed * Math.cos(mAngle * Math.PI / 180.0));
+            Log.d("currentLatLon: ", currentPt.latitude + ", " + currentPt.longitude);
+            log.debug("currentLatLon: " + currentPt.latitude + ", " + currentPt.longitude);
             MapStatusUpdate mapstatusupdate = MapStatusUpdateFactory.newLatLng(currentPt);
             //对地图的中心点进行更新
             mBaiduMap.setMapStatus(mapstatusupdate);
@@ -2125,6 +2173,32 @@ public class MainActivity extends AppCompatActivity
 
             // 修改服务中的经纬度坐标
             mockGpsService.setLatLngInfo(latLngInfo);
+        }
+    }
+
+    // 执行一次定位
+    public void locate(View view) {
+        if (null == locationManager) {
+            locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        }
+
+        try {
+            Location lc = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            currentPt = new LatLng(lc.getLatitude(), lc.getLongitude());
+
+            Log.d("currentLatLon: ", currentPt.latitude + ", " + currentPt.longitude);
+            log.debug("currentLatLon: " + currentPt.latitude + ", " + currentPt.longitude);
+
+            MapStatusUpdate mapstatusupdate = MapStatusUpdateFactory.newLatLng(currentPt);
+            //对地图的中心点进行更新
+            mBaiduMap.setMapStatus(mapstatusupdate);
+
+            updateMapState();
+            transformCoordinate(Double.toString(currentPt.longitude), Double.toString(currentPt.latitude));
+        } catch (SecurityException e) {
+            Log.d("Locating", "GPS未打开");
+            log.debug("Locating: GPS未打开");
+            DisplayToast("GPS 未打开");
         }
     }
 }
